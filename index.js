@@ -24,6 +24,7 @@ Usage:
 Options:
   -m, --model <model>      TTS model (default: sonic-3)
   -v, --voice <voice>      Voice ID or name (default: Barbershop Man)
+  -e, --emotion <emotion>  Emotion (e.g., neutral, angry, excited, content, sad, scared)
   -o, --output <file>      Save to .wav file instead of playing
   --list-voices            List available voices
   -h, --help               Show this help
@@ -142,6 +143,7 @@ if (args.includes("--list-voices")) {
 
 let model = "sonic-3";
 let voice = DEFAULT_VOICE;
+let emotion = null;
 let outputFile = null;
 const textParts = [];
 
@@ -150,6 +152,8 @@ for (let i = 0; i < args.length; i++) {
     model = args[++i];
   } else if (args[i] === "-v" || args[i] === "--voice") {
     voice = args[++i];
+  } else if (args[i] === "-e" || args[i] === "--emotion") {
+    emotion = args[++i];
   } else if (args[i] === "-o" || args[i] === "--output") {
     outputFile = args[++i];
   } else {
@@ -196,10 +200,15 @@ const ws = new WebSocket(
 );
 
 ws.on("open", () => {
-  ws.send(JSON.stringify({
+  const voiceObj = { mode: "id", id: voiceId };
+  if (emotion && !model.startsWith("sonic-3")) {
+    voiceObj.__experimental_controls = { emotion: [emotion] };
+  }
+
+  const payload = {
     model_id: model,
     transcript: text,
-    voice: { mode: "id", id: voiceId },
+    voice: voiceObj,
     language: "en",
     context_id: randomUUID(),
     output_format: {
@@ -207,7 +216,13 @@ ws.on("open", () => {
       encoding: "pcm_s16le",
       sample_rate: SAMPLE_RATE,
     },
-  }));
+  };
+
+  if (emotion && model.startsWith("sonic-3")) {
+    payload.generation_config = { emotion };
+  }
+
+  ws.send(JSON.stringify(payload));
 });
 
 ws.on("message", (data) => {
