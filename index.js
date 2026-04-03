@@ -2,7 +2,7 @@
 
 import { WebSocket } from "ws";
 import { randomUUID } from "crypto";
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import Speaker from "@mastra/node-speaker";
@@ -22,11 +22,12 @@ Usage:
   echo "text" | ai-say
 
 Options:
-  -m, --model <model>  TTS model (default: sonic-3)
-  -v, --voice <voice>  Voice ID or name (default: Barbershop Man)
-  --list-voices        List available voices
-  -h, --help           Show this help
-  --version            Show version
+  -m, --model <model>      TTS model (default: sonic-3)
+  -v, --voice <voice>      Voice ID or name (default: Barbershop Man)
+  -o, --output <file>      Save to .wav file instead of playing
+  --list-voices            List available voices
+  -h, --help               Show this help
+  --version                Show version
 `.trim();
 
 const args = process.argv.slice(2);
@@ -141,6 +142,7 @@ if (args.includes("--list-voices")) {
 
 let model = "sonic-3";
 let voice = DEFAULT_VOICE;
+let outputFile = null;
 const textParts = [];
 
 for (let i = 0; i < args.length; i++) {
@@ -148,6 +150,8 @@ for (let i = 0; i < args.length; i++) {
     model = args[++i];
   } else if (args[i] === "-v" || args[i] === "--voice") {
     voice = args[++i];
+  } else if (args[i] === "-o" || args[i] === "--output") {
+    outputFile = args[++i];
   } else {
     textParts.push(args[i]);
   }
@@ -174,12 +178,18 @@ const voiceId = await resolveVoice(voice);
 
 const SAMPLE_RATE = 44100;
 
-const speaker = new Speaker({
-  channels: 1,
-  bitDepth: 16,
-  sampleRate: SAMPLE_RATE,
-  signed: true,
-});
+let output;
+const pcmChunks = [];
+if (outputFile) {
+  output = { write(chunk) { pcmChunks.push(chunk); }, end() {} };
+} else {
+  output = new Speaker({
+    channels: 1,
+    bitDepth: 16,
+    sampleRate: SAMPLE_RATE,
+    signed: true,
+  });
+}
 
 const ws = new WebSocket(
   `wss://api.cartesia.ai/tts/websocket?api_key=${apiKey}&cartesia_version=2025-04-16`
@@ -210,11 +220,11 @@ ws.on("message", (data) => {
 
   if (msg.type === "chunk" && msg.data) {
     const audio = Buffer.from(msg.data, "base64");
-    speaker.write(audio);
+    output.write(audio);
   }
 
   if (msg.done) {
-    speaker.end();
+    output.end();
     ws.close();
   }
 });
@@ -224,6 +234,26 @@ ws.on("error", (err) => {
   process.exit(1);
 });
 
-speaker.on("close", () => {
-  process.exit(0);
-});
+if (outputFile) {
+  ws.on("close", () => {
+    const pcm = Buffer.concat(pcmChunks);
+    const header = Buffer.alloc(44);
+    header.write("RIFF", 0);
+    header.writeUInt32LE(36 + pcm.length, 4);
+    header.write("WAVE", 8);
+    header.write("fmt ", 12);
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);
+    header.writeUInt16LE(1, 22);
+    header.writeUInt32LE(SAMPLE_RATE, 24);
+    header.writeUInt32LE(SAMPLE_RATE * 2, 28);
+    header.writeUInt16LE(2, 32);
+    header.writeUInt16LE(16, 34);
+    header.write("data", 36);
+    header.writeUInt32LE(pcm.length, 40);
+    writeFileSync(outputFile, Buffer.concat([header, pcm]));
+    process.exit(0);
+  });
+} else {
+  output.on("close", () => process.exit(0));
+}
